@@ -2,19 +2,23 @@
 
 GOLBAL_FLOW golbal_flow;
 
-#define MODE_4_K            5.0f        //流量系K
-#define MODE_4_PLUSE_CNT_1L 300.0f      //每升水脉冲数
-//#define MODE_6_K            5.5f
-//#define MODE_6_PLUSE_CNT_1L 330.0f
+// 定义流量模型的枚举类型
+typedef enum {
+    MODE_4_PIPE = 0,   // 四分管
+    MODE_6_PIPE = 1,   // 六分管
+    MODE_6MM_PIPE = 2  // 6mm管
+} FlowModel;
 
-#define MODE_6_K            750.0f
-#define MODE_6_PLUSE_CNT_1L 45000.0f
+// 定义流量参数
+float flowK[3] = {5.0f, 5.5f, 80.0f};                  // 流量系数 K
+float pulseCntPerLiter[3] = {300.0f, 330.0f, 4800.0f}; // 每升水脉冲数
 
-//#define	FLOW_FULL			1000000
+// 定义 Flow_Model
+FlowModel flowModel = MODE_6MM_PIPE; // 默认使用6mm管
 
-uint8_t Flow_Model = 0;     //4分管定义为1；6分管定义为0
 
-uint32_t pluse1L;
+uint32_t pluse1L;           //测试1L水的脉冲数
+
 //==============================================================================
 // @函数: Flow_Read(void)
 // @描述: 读取流量
@@ -24,53 +28,37 @@ uint32_t pluse1L;
 //==============================================================================
 void Flow_Read(void)
 {
-	if(golbal_flow.receive_flag)
+    // 根据 Flow_Model 选择不同的流量参数
+    float flowKValue = flowK[flowModel];
+    float pulseCntValue = pulseCntPerLiter[flowModel];
+    
+	if(golbal_flow.pluse_1s > 0)
 	{
-		if(golbal_flow.pluse_1s > 0)
-		{
-        #ifdef Flow_Model
-			/*计算公式：
-				累计流量 = 对瞬时流量做积分
-								 = (脉冲频率 / 300个脉冲)    //1L需要300个脉冲，脉冲频率HZ
-			*/
-			golbal_flow.acculat += golbal_flow.pluse_1s / MODE_4_PLUSE_CNT_1L;   //单位L
-				
-			/*计算公式：
-						瞬时流量 = (脉冲频率 / 300个脉冲) * 60s 
-										 = 脉冲频率 / 5.0(流量系K)
-			*/
-			golbal_flow.instant = golbal_flow.pluse_1s / MODE_4_K;  //单位（L/min）
-            
-        #else
-      	/*计算公式：
-				累计流量 = 对瞬时流量做积分
-								 = (脉冲频率 / 每升水脉冲数)
-			*/
-			golbal_flow.acculat += (golbal_flow.pluse_1s * 1000/ MODE_6_PLUSE_CNT_1L);   //单位mL
-			pluse1L+=golbal_flow.pluse_1s;
-			/*计算公式：
-						瞬时流量 = ((脉冲频率 + 3) / 330个脉冲) * 60s 
-										 = (脉冲频率 + 3) / 5.5(流量系K)
-			*/
-			golbal_flow.instant = golbal_flow.pluse_1s / MODE_6_K;  //单位（L/min）
-            
-        #endif
-      if(golbal_flow.acculat >= 1000000)
-			{
-				golbal_flow.acculat = 0;
-			}
-		}
-		else
-		{
-			golbal_flow.instant  = 0;
-		}
-		
-		printf("瞬间流量：%.2f（L/min） 累计流量：%.0f mL \n",golbal_flow.instant,golbal_flow.acculat);
-		
-		golbal_flow.receive_flag = 0;     			 //接收完成标志位清零
-	
-        golbal_flow.pluse_1s = 0;
-	}
-}
+    /*计算公式：
+			累计流量 = 对瞬时流量做积分
+							 = (脉冲频率 / 每升水脉冲数)
+		*/
+		golbal_flow.acculat += (golbal_flow.pluse_1s * 1000 / pulseCntValue);   //单位mL
+		pluse1L+=golbal_flow.pluse_1s;
+		/*计算公式：
+					瞬时流量 = ((脉冲频率 ) / 每升水脉冲数) * 60s 
+									 = (脉冲频率) / (流量系K)
+		*/
+		golbal_flow.instant = golbal_flow.pluse_1s / flowKValue;  //单位（L/min）
 
+        if(golbal_flow.acculat >= 1000000)        //最大累计流量1000L
+		{
+			golbal_flow.acculat = 0;
+		}
+	}
+	else
+	{
+		golbal_flow.instant  = 0;
+	}
+	
+	printf("瞬间流量：%.2f（L/min） 累计流量：%.0f mL \n",golbal_flow.instant,golbal_flow.acculat);
+   
+	golbal_flow.receive_flag = 0;   //接收完成标志位清零
+    golbal_flow.pluse_1s = 0;       //脉冲数清零
+}
 

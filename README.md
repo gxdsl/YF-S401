@@ -4,15 +4,14 @@ date: 2024-02-25 21:27
 tags: Module
 ---
 
-## YF-S401水流量传感器
+# YF-S401水流量传感器
 
-### 简介
+## 简介
 
 ![](./Attachments/YF-401.png)
 
-​	水流量传感器主要由塑料阀体、水流转子组件和霍尔传感器组成。装在热水器进水端，用于检测进水流量，当水通过水流转子组件时，磁性转子转动并且转速随着流量变化而变化，霍尔传感器输出相应脉冲信号，反馈给控制器，由控制器判断水流量的大小，进行调控。
+​	水流量传感器主要由塑料阀体、水流转子组件和霍尔传感器组成。装在热水器进水端，用于检测进水流量，当水通过水流转子组件时，磁性转子转动并且转速随着流量变化而变化，霍尔传感器输出相应脉冲信号，反馈给控制器，由控制器判断水流量的大小，进行调控。该模块以霍尔传感器为核心器件，每流经1L水就会产生固定的脉冲，有着三种型号：YF-S201(4分G1/2螺纹接口)、YF-S401(6mm软管接口)，以及YF-S401(6mm软管)。型号不同的水流量传感器每升水流量产生的脉冲数不同，本文以YF-S401为例。
 
-​	模块以霍尔传感器为核心器件，每流经1L水就会产生固定的脉冲，一般分为两种型号：一种为YF-S201(4分G1/2螺纹接口)，一种为YF-S401(6mm软管接口)，型号不同单位水流量产生的脉冲数不同，本文以YF-S401为例。
 |     特性     |      参数       |
 | :----------: | :-------------: |
 | 额定工作电压 |  DC3.5 5V-12V   |
@@ -20,7 +19,7 @@ tags: Module
 |   允许耐压   | 水压1.75Mpa以下 |
 |   温度范围   |    ≤80&deg;C    |
 
-### 接线
+## 接线
 
 | YF-S401 |    描述    |
 | :-----: | :--------: |
@@ -28,13 +27,7 @@ tags: Module
 | GND(黑) | 负极，接地 |
 | OUT(黄) |  信号输出  |
 
-### 流量计算公式
-
-$瞬时流量 = \left( \frac{脉冲频率}{330个脉冲} \right) \times 60s = \frac{2\times脉冲频率}{11.0(流量系K)}$
-
-$累计流量 = \text{对瞬时流量做累加} = \frac{脉冲频率}{330个脉冲}$
-
-### 执行流程
+## 执行流程
 
 ​	首先进行引脚配置及初始化、外部中断配置与初始化、以及定时器设置。随后，利用定时器设定1秒的时间间隔，计算在此时间段内触发的中断次数，通过中断次数推算水流量。
 
@@ -48,6 +41,10 @@ graph TD;
     F --> G(计算水流量);
     G --> H(结束);
 ```
+
+# 工程介绍
+
+​	本次代码实现按键控制继电器实现12V直流水泵抽水并计算累计出水量和瞬时出水量，使用串口打印。在找到的水流传感器的参考代码中，只有4分管和6分管的流量系数而没有6mm水管的，所以自己测了一下YF-S401水流传感器在出水1L时大概会产生4800个脉冲（脉冲数有点离谱），以这个数据计算水流量并最后实现了功能。
 
 ## 外部中断计数
 
@@ -134,19 +131,27 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 4. 水流量计算
 
 ```c
-#define MODE_4_K            5.0f        //流量系K
-#define MODE_4_PLUSE_CNT_1L 300.0f      //每升水脉冲数
-//#define MODE_6_K            5.5f
-//#define MODE_6_PLUSE_CNT_1L 330.0f
+#include "YFS401.h"
 
-#define MODE_6_K            750.0f
-#define MODE_6_PLUSE_CNT_1L 45000.0f
+GOLBAL_FLOW golbal_flow;
 
-#define	FLOW_FULL			1000000
+// 定义流量模型的枚举类型
+typedef enum {
+    MODE_4_PIPE = 0,   // 四分管
+    MODE_6_PIPE = 1,   // 六分管
+    MODE_6MM_PIPE = 2  // 6mm管
+} FlowModel;
 
-uint8_t Flow_Model = 0;     //4分管定义为1；6分管定义为0
+// 定义流量参数
+float flowK[3] = {5.0f, 5.5f, 80.0f};                  // 流量系数 K
+float pulseCntPerLiter[3] = {300.0f, 330.0f, 4800.0f}; // 每升水脉冲数
 
-uint32_t pluse1L;
+// 定义 Flow_Model
+FlowModel flowModel = MODE_6MM_PIPE; // 默认使用6mm管
+
+
+uint32_t pluse1L;           //测试1L水的脉冲数
+
 //==============================================================================
 // @函数: Flow_Read(void)
 // @描述: 读取流量
@@ -156,58 +161,34 @@ uint32_t pluse1L;
 //==============================================================================
 void Flow_Read(void)
 {
-	if(golbal_flow.receive_flag)
+    // 根据 Flow_Model 选择不同的流量参数
+    float flowKValue = flowK[flowModel];
+    float pulseCntValue = pulseCntPerLiter[flowModel];
+    
+	if(golbal_flow.pluse_1s > 0)
 	{
-		if(golbal_flow.pluse_1s > 0)
-		{
-        #ifdef Flow_Model
-			/*计算公式：
-				累计流量 = 对瞬时流量做积分
-								 = (脉冲频率 / 300个脉冲)    //1L需要300个脉冲，脉冲频率HZ
-			*/
-			golbal_flow.acculat += golbal_flow.pluse_1s / MODE_4_PLUSE_CNT_1L;   //单位L
-				
-			/*计算公式：
-						瞬时流量 = (脉冲频率 / 300个脉冲) * 60s 
-										 = 脉冲频率 / 5.0(流量系K)
-			*/
-			golbal_flow.instant = golbal_flow.pluse_1s / MODE_4_K;  //单位（L/min）
-            
-        #else
-      	/*计算公式：
-				累计流量 = 对瞬时流量做积分
-								 = (脉冲频率 / 每升水脉冲数)
-			*/
-			golbal_flow.acculat += (golbal_flow.pluse_1s * 1000/ MODE_6_PLUSE_CNT_1L);   //单位mL
-			pluse1L+=golbal_flow.pluse_1s;
-			/*计算公式：
-						瞬时流量 = ((脉冲频率 + 3) / 330个脉冲) * 60s 
-										 = (脉冲频率 + 3) / 5.5(流量系K)
-			*/
-			golbal_flow.instant = golbal_flow.pluse_1s / MODE_6_K;  //单位（L/min）
-            
-        #endif
-      if(golbal_flow.acculat >= FLOW_FULL)
-			{
-				golbal_flow.acculat = 0;
-			}
-		}
-		else
-		{
-			golbal_flow.instant  = 0;
-		}
-		
-		printf("瞬间流量：%.2f（L/min） 累计流量：%.0f mL \n",golbal_flow.instant,golbal_flow.acculat);
-		
-		golbal_flow.receive_flag = 0;     			 //接收完成标志位清零
-	
-        golbal_flow.pluse_1s = 0;
-	}
-}
+		golbal_flow.acculat += (golbal_flow.pluse_1s * 1000 / pulseCntValue);   //单位mL
+		pluse1L+=golbal_flow.pluse_1s;
+		golbal_flow.instant = golbal_flow.pluse_1s / flowKValue;  //单位（L/min）
 
+        if(golbal_flow.acculat >= 1000000)        //最大累计流量1000L
+		{
+			golbal_flow.acculat = 0;
+		}
+	}
+	else
+	{
+		golbal_flow.instant  = 0;
+	}
+	
+    printf("瞬间流量：%.2f（L/min） 累计流量：%.2f mL   脉冲数：%d \n",golbal_flow.instant,golbal_flow.acculat,golbal_flow.pluse_1s);
+   
+	golbal_flow.receive_flag = 0;   //接收完成标志位清零
+    golbal_flow.pluse_1s = 0;       //脉冲数清零
+}
 ```
 
-根据例程的每升水330次脉冲信号并不合理，根据多次测量水量并更改系数后，运行结果如下图所示：
+根据多次测量水量并更改系数后，运行结果如下图所示：
 
 ![](./Attachments/YFS401外部中断串口测试.png)
 
@@ -251,21 +232,27 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 3. 水流量计算
 
 ```c
+#include "YFS401.h"
+
 GOLBAL_FLOW golbal_flow;
 
-#define MODE_4_K            5.0f        //流量系K
-#define MODE_4_PLUSE_CNT_1L 300.0f      //每升水脉冲数
-//#define MODE_6_K            5.5f
-//#define MODE_6_PLUSE_CNT_1L 330.0f
+// 定义流量模型的枚举类型
+typedef enum {
+    MODE_4_PIPE = 0,   // 四分管
+    MODE_6_PIPE = 1,   // 六分管
+    MODE_6MM_PIPE = 2  // 6mm管
+} FlowModel;
 
-#define MODE_6_K            750.0f
-#define MODE_6_PLUSE_CNT_1L 45000.0f
+// 定义流量参数
+float flowK[3] = {5.0f, 5.5f, 80.0f};                  // 流量系数 K
+float pulseCntPerLiter[3] = {300.0f, 330.0f, 4800.0f}; // 每升水脉冲数
 
-#define	FLOW_FULL			1000000
+// 定义 Flow_Model
+FlowModel flowModel = MODE_6MM_PIPE; // 默认使用6mm管
 
-uint8_t Flow_Model = 0;     //4分管定义为1；6分管定义为0
 
-uint32_t pluse1L;
+uint32_t pluse1L;           //测试1L水的脉冲数
+
 //==============================================================================
 // @函数: Flow_Read(void)
 // @描述: 读取流量
@@ -275,53 +262,30 @@ uint32_t pluse1L;
 //==============================================================================
 void Flow_Read(void)
 {
-	if(golbal_flow.receive_flag)
+    // 根据 Flow_Model 选择不同的流量参数
+    float flowKValue = flowK[flowModel];
+    float pulseCntValue = pulseCntPerLiter[flowModel];
+    
+	if(golbal_flow.pluse_1s > 0)
 	{
-		if(golbal_flow.pluse_1s > 0)
-		{
-        #ifdef Flow_Model
-			/*计算公式：
-				累计流量 = 对瞬时流量做积分
-								 = (脉冲频率 / 300个脉冲)    //1L需要300个脉冲，脉冲频率HZ
-			*/
-			golbal_flow.acculat += golbal_flow.pluse_1s / MODE_4_PLUSE_CNT_1L;   //单位L
-				
-			/*计算公式：
-						瞬时流量 = (脉冲频率 / 300个脉冲) * 60s 
-										 = 脉冲频率 / 5.0(流量系K)
-			*/
-			golbal_flow.instant = golbal_flow.pluse_1s / MODE_4_K;  //单位（L/min）
+		golbal_flow.acculat += (golbal_flow.pluse_1s * 1000 / pulseCntValue);   //单位mL
+		pluse1L+=golbal_flow.pluse_1s;
+		golbal_flow.instant = golbal_flow.pluse_1s / flowKValue;  //单位（L/min）
 
-        #else
-      	/*计算公式：
-				累计流量 = 对瞬时流量做积分
-								 = (脉冲频率 / 每升水脉冲数)
-			*/
-			golbal_flow.acculat += (golbal_flow.pluse_1s * 1000 / MODE_6_PLUSE_CNT_1L);   //单位mL
-			pluse1L+=golbal_flow.pluse_1s;
-			/*计算公式：
-						瞬时流量 = ((脉冲频率 + 3) / 330个脉冲) * 60s 
-										 = (脉冲频率 + 3) / 5.5(流量系K)
-			*/
-			golbal_flow.instant = (golbal_flow.pluse_1s + 3) / MODE_6_K;  //单位（L/min）
-
-        #endif
-      if(golbal_flow.acculat >= 1000000)        //最大累计流量1000L
-			{
-				golbal_flow.acculat = 0;
-			}
-		}
-		else
+        if(golbal_flow.acculat >= 1000000)        //最大累计流量1000L
 		{
-			golbal_flow.instant  = 0;
+			golbal_flow.acculat = 0;
 		}
-		
-		printf("瞬间流量：%.2f（L/min） 累计流量：%.2f mL   脉冲数：%d \n",golbal_flow.instant,golbal_flow.acculat,golbal_flow.pluse_1s);
-		
-		golbal_flow.receive_flag = 0;     			 //接收完成标志位清零
-	
-        golbal_flow.pluse_1s = 0;
 	}
+	else
+	{
+		golbal_flow.instant  = 0;
+	}
+	
+    printf("瞬间流量：%.2f（L/min） 累计流量：%.2f mL   脉冲数：%d \n",golbal_flow.instant,golbal_flow.acculat,golbal_flow.pluse_1s);
+   
+	golbal_flow.receive_flag = 0;   //接收完成标志位清零
+    golbal_flow.pluse_1s = 0;       //脉冲数清零
 }
 ```
 
